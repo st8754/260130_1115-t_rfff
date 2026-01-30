@@ -1,0 +1,7 @@
+{
+  "name": "RFID 64H Stability Tester Pro",
+  "description": "Professional tool for testing RS485 EPC Protocol (64H) with real-time stability metrics.",
+  "requestFramePermissions": [
+    "serial"
+  ]
+}
