@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { 
-  Activity, Settings, Database, Terminal, RefreshCw, Cpu, Tag, Zap, CirclePlay, Trash2, X, ChevronUp, ChevronDown, Link, Link2Off, FileUp, CheckCircle2, AlertTriangle
+  Activity, Settings, Database, Terminal, RefreshCw, Cpu, Tag, Zap, CirclePlay, Trash2, X, ChevronUp, ChevronDown, Link, Link2Off, FileUp, CheckCircle2, AlertTriangle, Pause, Play
 } from 'lucide-react';
 import { TestConfig, TestResult, ERROR_CODES, CommandType } from './types';
 import { 
@@ -41,7 +41,7 @@ const App: React.FC = () => {
     commandType: '64H',
     totalCycles: 10,
     timeoutMs: 3000,
-    intervalMs: 3500,
+    intervalMs: 100, 
     maxRecords: 10,
     id: 1, 
     channel: 0, 
@@ -59,18 +59,23 @@ const App: React.FC = () => {
 
   // Update States
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [fileVersion, setFileVersion] = useState<string>('');
   const [isUpdating, setIsUpdating] = useState(false);
+  const [isUpdatePaused, setIsUpdatePaused] = useState(false);
   const [updateProgress, setUpdateProgress] = useState(0);
   const [updateStatus, setUpdateStatus] = useState('');
-  const [currentPacket, setCurrentPacket] = useState(0);
-  const [totalPackets, setTotalPackets] = useState(0);
 
   const [port, setPort] = useState<any>(null);
   const masterBufferRef = useRef<Uint8Array>(new Uint8Array(0));
   const isReadingRef = useRef<boolean>(false);
   const backgroundReaderRef = useRef<any>(null);
   const stopRequestedRef = useRef<boolean>(false);
+  const updatePausedRef = useRef<boolean>(false);
   const logEndRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    updatePausedRef.current = isUpdatePaused;
+  }, [isUpdatePaused]);
 
   const getFullTimestamp = () => {
     const now = new Date();
@@ -83,7 +88,6 @@ const App: React.FC = () => {
     }
   }, [logs, rawLogs, autoScrollLogs]);
 
-  // Handle Serial Disconnect
   useEffect(() => {
     const onDisconnect = (event: any) => {
       if (port && event.port === port) {
@@ -106,6 +110,7 @@ const App: React.FC = () => {
     setIsConnected(false);
     setIsTesting(false);
     setIsUpdating(false);
+    setIsUpdatePaused(false);
     setPort(null);
     isReadingRef.current = false;
     backgroundReaderRef.current = null;
@@ -153,16 +158,9 @@ const App: React.FC = () => {
         }
       }
     } catch (err: any) {
-      if (err.name === 'NetworkError' || err.message.includes('lost')) {
-        addLog("連線異常中斷", 'error');
-        cleanupState();
-      }
+      if (err.name === 'NetworkError' || err.message.includes('lost')) cleanupState();
     } finally {
-      try {
-        if (backgroundReaderRef.current === reader) {
-          reader.releaseLock();
-        }
-      } catch (e) {}
+      try { if (backgroundReaderRef.current === reader) reader.releaseLock(); } catch (e) {}
       isReadingRef.current = false;
       backgroundReaderRef.current = null;
     }
@@ -170,10 +168,7 @@ const App: React.FC = () => {
 
   const connectSerial = async () => {
     const serial = (navigator as any).serial;
-    if (!serial) {
-      alert("瀏覽器不支援 Web Serial");
-      return;
-    }
+    if (!serial) { alert("瀏覽器不支援 Web Serial"); return; }
     try {
       const selectedPort = await serial.requestPort();
       await selectedPort.open({ baudRate: config.baudRate });
@@ -181,9 +176,7 @@ const App: React.FC = () => {
       setIsConnected(true);
       addLog(`串口已連接`, 'system');
       startBackgroundRead(selectedPort);
-    } catch (err: any) {
-      addLog("連線失敗: " + err.message, 'error');
-    }
+    } catch (err: any) { addLog("連線失敗: " + err.message, 'error'); }
   };
 
   const disconnectSerial = async () => {
@@ -199,10 +192,47 @@ const App: React.FC = () => {
     }
   };
 
-  const runFirmwareUpdate = async () => {
-    if (!isConnected || !selectedFile || isUpdating) return;
+  // 從二進位檔案中提取前 32 位元組，並擷取到 .bin 之前的字串
+  const extractVersionFromFile = async (file: File) => {
+    const buffer = await file.arrayBuffer();
+    const data = new Uint8Array(buffer).slice(0, 32);
+    // 轉換為字串
+    const text = new TextDecoder().decode(data);
+    // 尋找 .bin 的位置
+    const binIndex = text.indexOf('.bin');
+    let finalVersion = '';
+    if (binIndex !== -1) {
+      // 擷取 .bin 之前的內容
+      finalVersion = text.substring(0, binIndex);
+    } else {
+      finalVersion = text;
+    }
+    // 清理字串：移除 null (0x00) 與前後空白
+    finalVersion = finalVersion.replace(/\0/g, '').trim();
+    setFileVersion(finalVersion || '格式錯誤');
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0] || null;
+    setSelectedFile(file);
+    if (file) {
+      extractVersionFromFile(file);
+    } else {
+      setFileVersion('');
+    }
+  };
+
+  const runFirmwareUpdate = async (isRestart = false) => {
+    if (!isConnected || !selectedFile) return;
+    
+    if (isRestart) {
+      stopRequestedRef.current = true;
+      await new Promise(r => setTimeout(r, 200));
+    }
+
     setIsUpdating(true);
-    setUpdateStatus('讀取檔案中...');
+    setIsUpdatePaused(false);
+    setUpdateStatus('啟動更新...');
     setUpdateProgress(0);
     stopRequestedRef.current = false;
 
@@ -211,29 +241,20 @@ const App: React.FC = () => {
       const fileData = new Uint8Array(arrayBuffer);
       const pageSize = 512;
       const totalP = Math.ceil(fileData.length / pageSize);
-      setTotalPackets(totalP);
 
-      // F0H: Enter Update Mode
-      setUpdateStatus('進入更新模式 (F0H)...');
-      masterBufferRef.current = new Uint8Array(0);
       await writeToSerial(buildF0HRequest(config.id), 'F0H');
-      let f0Ack = false;
-      let f0Start = Date.now();
-      while (Date.now() - f0Start < 2000) {
-        if (scanAllPackets(masterBufferRef.current, 'F0').length > 0) { f0Ack = true; break; }
-        await new Promise(r => setTimeout(r, 50));
-      }
-      if (!f0Ack) throw new Error("F0H 無回應");
-      await new Promise(r => setTimeout(r, 500));
+      await new Promise(r => setTimeout(r, 1000));
 
-      // F1H: Transmit Packets
-      for (let i = 0; i < totalP; i++) {
+      for (let i = 1; i <= totalP; i++) {
+        while (updatePausedRef.current && !stopRequestedRef.current) {
+          setUpdateStatus('已暫停');
+          await new Promise(r => setTimeout(r, 100));
+        }
         if (stopRequestedRef.current || !isConnected) break;
-        setUpdateStatus(`傳送封包 (${i + 1}/${totalP})...`);
-        setCurrentPacket(i);
         
+        setUpdateStatus(`傳輸封包 ${i}/${totalP}`);
         const chunk = new Uint8Array(pageSize).fill(0x00);
-        chunk.set(fileData.slice(i * pageSize, (i + 1) * pageSize));
+        chunk.set(fileData.slice((i - 1) * pageSize, i * pageSize));
         
         masterBufferRef.current = new Uint8Array(0);
         await writeToSerial(buildF1HRequest(config.id, i, chunk), `F1H Pkt:${i}`);
@@ -241,33 +262,92 @@ const App: React.FC = () => {
         let confirmed = false;
         let start = Date.now();
         while (Date.now() - start < 3000) {
-          if (!isConnected) throw new Error("設備中斷");
+          if (stopRequestedRef.current) break;
           const pkts = scanAllPackets(masterBufferRef.current, 'F1');
-          // 修正：相容 0-based 與 1-based 的序號回應
-          const ack = pkts.find(p => p.cmd === 0xF1 && (p.currentPacketNum === i || p.currentPacketNum === i + 1));
-          if (ack) {
-            if (ack.errorCode === '0001') { confirmed = true; break; }
-            else throw new Error(`封包 ${i} 錯誤: ${ERROR_CODES[ack.errorCode] || ack.errorCode}`);
-          }
+          const ack = pkts.find(p => p.cmd === 0xF1 && (p.currentPacketNum === i || p.currentPacketNum === i - 1));
+          if (ack && ack.errorCode === '0001') { confirmed = true; break; }
           await new Promise(r => setTimeout(r, 20));
         }
-        if (!confirmed) throw new Error(`封包 ${i} 逾時 (無匹配回應)`);
-        setUpdateProgress(Math.floor(((i + 1) / totalP) * 100));
+        if (stopRequestedRef.current) break;
+        if (!confirmed) throw new Error(`封包 ${i} 逾時`);
+        setUpdateProgress(Math.floor((i / totalP) * 100));
       }
 
-      // F2H: Start FW Update
       if (!stopRequestedRef.current) {
-        setUpdateStatus('啟動更新流程 (F2H)...');
+        setUpdateStatus('發送結束指令 (F2)...');
         masterBufferRef.current = new Uint8Array(0);
         await writeToSerial(buildF2HRequest(config.id), 'F2H');
-        await new Promise(r => setTimeout(r, 1000));
-        setUpdateStatus('更新成功');
-        addLog('韌體更新成功', 'system');
+        
+        // 判斷 F2H 響應
+        let f2Confirmed = false;
+        let f2Start = Date.now();
+        while (Date.now() - f2Start < 3000) {
+          const pkts = scanAllPackets(masterBufferRef.current, 'F2');
+          const ack = pkts.find(p => p.cmd === 0xF2);
+          if (ack) {
+            if (ack.errorCode === '0001') {
+              f2Confirmed = true;
+              break;
+            } else {
+              throw new Error(`結束指令失敗 (F2): ${ERROR_CODES[ack.errorCode] || ack.errorCode}`);
+            }
+          }
+          await new Promise(r => setTimeout(r, 50));
+        }
+        if (!f2Confirmed) throw new Error('結束指令 (F2) 未獲應答');
+
+        setUpdateStatus('更新成功，等待重啟 (2s)...');
+        await new Promise(r => setTimeout(r, 2000));
+
+        // 循環詢問 0x35 (版號), 最多 3 次, 每回合 1s 逾時
+        let verifiedVersion = '';
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          if (stopRequestedRef.current) break;
+          setUpdateStatus(`驗證版號 (嘗試 ${attempt}/3)...`);
+          masterBufferRef.current = new Uint8Array(0);
+          await writeToSerial(build35HRequest(config.id), '35H (Verify)');
+          
+          let waitStart = Date.now();
+          while (Date.now() - waitStart < 1000) {
+            const pkts = scanAllPackets(masterBufferRef.current, '35H');
+            const ack = pkts.find(p => p.cmd === 0x35);
+            if (ack && ack.fwVersion) {
+              verifiedVersion = ack.fwVersion.trim();
+              break;
+            }
+            await new Promise(r => setTimeout(r, 50));
+          }
+          if (verifiedVersion) break;
+        }
+
+        if (!verifiedVersion) {
+          throw new Error('讀取版號失敗 (三次重試皆逾時)');
+        }
+
+        addLog(`設備重啟完成，讀回版號: ${verifiedVersion}`, 'info');
+
+        // 比對版號 (與檔案提取的 fileVersion 進行比對)
+        if (fileVersion) {
+          // 清理可能的 V 字元前綴進行寬鬆但準確的比對
+          const cleanFile = fileVersion.toUpperCase().replace(/^V/, '');
+          const cleanDevice = verifiedVersion.toUpperCase().replace(/^V/, '');
+          
+          if (cleanFile !== cleanDevice) {
+            throw new Error(`版號驗證失敗！預期: ${fileVersion}, 實際: ${verifiedVersion}`);
+          }
+        }
+
+        setUpdateStatus(`更新成功！版號: ${verifiedVersion}`);
+        setTimeout(() => {
+          setIsUpdating(false);
+          setUpdateProgress(0);
+        }, 3000);
+      } else {
+        setUpdateStatus('操作已中止');
       }
     } catch (err: any) {
-      setUpdateStatus(`更新失敗: ${err.message}`);
+      setUpdateStatus(`失敗: ${err.message}`);
       addLog(`更新異常: ${err.message}`, 'error');
-    } finally {
       setIsUpdating(false);
     }
   };
@@ -284,7 +364,7 @@ const App: React.FC = () => {
     
     await writeToSerial(txBuffer, config.commandType);
     const startTime = Date.now();
-    const deadline = startTime + config.timeoutMs + 1000; 
+    const deadline = startTime + config.timeoutMs + 500; 
     let isFinished = false;
     let finalErrorCode = 'N/A';
     let epcList: string[] = [];
@@ -334,6 +414,10 @@ const App: React.FC = () => {
     setIsTesting(false);
   };
 
+  const totalCount = results.length;
+  const successCount = results.filter(r => r.status === 'Success').length;
+  const stabilityRate = totalCount > 0 ? Math.round((successCount / totalCount) * 100) : 0;
+
   return (
     <div className="bg-slate-50 min-h-screen text-slate-700 font-sans flex flex-col h-screen overflow-hidden">
       {/* Header */}
@@ -342,11 +426,39 @@ const App: React.FC = () => {
           <div className="p-2 bg-indigo-600 rounded-lg shadow-indigo-100 flex-shrink-0">
             <Activity className="text-white w-5 h-5" />
           </div>
-          <h1 className="text-sm font-black text-slate-800 hidden sm:block">RFID STABILITY PRO</h1>
-          <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full ${isConnected ? 'bg-emerald-50 text-emerald-600' : 'bg-slate-100 text-slate-400'}`}>
-            {isConnected ? '● ONLINE' : '○ OFFLINE'}
-          </span>
+          <div className="flex flex-col">
+            <h1 className="text-xs font-black text-slate-800 leading-none">RFID STABILITY PRO</h1>
+            <div className="flex items-center gap-2 mt-1">
+              <span className={`text-[8px] font-bold px-2 py-0.5 rounded-full ${isConnected ? 'bg-emerald-50 text-emerald-600' : 'bg-slate-100 text-slate-400'}`}>
+                {isConnected ? '● ONLINE' : '○ OFFLINE'}
+              </span>
+            </div>
+          </div>
         </div>
+
+        <div className="flex-1 flex justify-center px-4">
+          <div className="bg-slate-50 border border-slate-100 rounded-xl px-4 py-1.5 flex items-center gap-4 min-w-[160px] justify-center">
+             {activeTab === 'update' && (isUpdating || updateProgress > 0) ? (
+               <div className="flex flex-col items-center">
+                  <span className="text-[8px] font-black text-slate-400 uppercase tracking-widest">更新進度</span>
+                  <span className="text-sm font-black tabular-nums text-indigo-500">{updateProgress}%</span>
+               </div>
+             ) : (
+               <>
+                 <div className="flex flex-col items-center">
+                    <span className="text-[8px] font-black text-slate-400 uppercase tracking-widest">穩定性</span>
+                    <span className={`text-sm font-black tabular-nums ${stabilityRate >= 95 ? 'text-emerald-500' : 'text-rose-500'}`}>{stabilityRate}%</span>
+                 </div>
+                 <div className="w-px h-6 bg-slate-200"></div>
+                 <div className="flex flex-col items-center">
+                    <span className="text-[8px] font-black text-slate-400 uppercase tracking-widest">成功 / 總數</span>
+                    <span className="text-sm font-black tabular-nums text-slate-600">{successCount} / {totalCount}</span>
+                 </div>
+               </>
+             )}
+          </div>
+        </div>
+
         <div className="flex items-center gap-2">
            {!isConnected ? (
              <button onClick={connectSerial} className="h-9 px-4 bg-slate-900 text-white rounded-lg font-black text-[10px] flex items-center gap-2 active:scale-95 transition-all shadow-md"><Link className="w-3.5 h-3.5" /> CONNECT</button>
@@ -358,7 +470,6 @@ const App: React.FC = () => {
       </header>
 
       <main className="flex-1 flex flex-col relative overflow-hidden">
-        {/* Terminal View */}
         {activeTab === 'terminal' && (
           <div className="flex-1 flex flex-col h-full">
              <div className="bg-slate-900 mx-3 mt-3 mb-[75px] rounded-xl flex-1 flex flex-col overflow-hidden border border-slate-800">
@@ -390,10 +501,8 @@ const App: React.FC = () => {
                 </div>
              </div>
 
-             {/* Bottom Panel - Parameters Selection */}
              <div className={`absolute bottom-0 inset-x-0 bg-white border-t border-slate-200 transition-all duration-300 z-40 ${isControlExpanded ? 'h-72' : 'h-14'}`}>
                 <button onClick={() => setIsControlExpanded(!isControlExpanded)} className="absolute -top-3 left-1/2 -translate-x-1/2 bg-white border border-slate-200 rounded-full p-1 shadow-sm"><ChevronUp className={`w-4 h-4 text-slate-400 transition-transform ${isControlExpanded ? 'rotate-180' : ''}`} /></button>
-                
                 <div className="p-4 flex flex-col h-full">
                    <div className="flex items-center gap-3 mb-4">
                       <div className="relative shrink-0">
@@ -412,7 +521,6 @@ const App: React.FC = () => {
                          </button>
                       </div>
                    </div>
-
                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 flex-1 overflow-y-auto">
                       <div className="bg-slate-50 p-2.5 rounded-lg border border-slate-100">
                          <label className="text-[9px] font-black text-slate-400 uppercase block mb-1">測試總次數</label>
@@ -436,30 +544,57 @@ const App: React.FC = () => {
           </div>
         )}
 
-        {/* Update Tab */}
         {activeTab === 'update' && (
           <div className="flex-1 p-6 flex flex-col items-center justify-center">
              <div className="w-full max-w-md bg-white p-8 rounded-3xl border border-slate-200 shadow-xl">
-                <h3 className="text-lg font-black mb-6 flex items-center gap-2"><Cpu className="text-indigo-600" /> FIRMWARE IAP</h3>
-                <input type="file" accept=".bin" onChange={e => setSelectedFile(e.target.files?.[0] || null)} className="hidden" id="bin-file" />
-                <label htmlFor="bin-file" className="block border-2 border-dashed border-slate-200 p-8 rounded-2xl text-center cursor-pointer hover:border-indigo-300 transition-colors">
-                   <FileUp className="w-8 h-8 mx-auto mb-2 text-slate-400" />
-                   <span className="text-xs font-bold text-slate-600">{selectedFile ? selectedFile.name : '點擊選擇 .bin 檔案'}</span>
+                <h3 className="text-lg font-black mb-6 flex items-center gap-2 uppercase tracking-widest"><Cpu className="text-indigo-600" /> Firmware IAP</h3>
+                <input type="file" accept=".bin" onChange={handleFileChange} className="hidden" id="bin-file" disabled={isUpdating && !isUpdatePaused} />
+                <label htmlFor="bin-file" className={`block border-2 border-dashed p-8 rounded-2xl text-center transition-colors ${selectedFile ? 'border-indigo-100 bg-indigo-50/10' : 'border-slate-100 hover:border-indigo-200'} cursor-pointer relative overflow-hidden`}>
+                   <FileUp className={`w-8 h-8 mx-auto mb-2 ${selectedFile ? 'text-indigo-500' : 'text-slate-300'}`} />
+                   <span className="text-xs font-bold text-slate-600 block truncate">{selectedFile ? selectedFile.name : '點擊選擇 .bin 檔案'}</span>
+                   {fileVersion && (
+                     <div className="mt-2 flex justify-center">
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-black bg-indigo-50 text-indigo-600 border border-indigo-100">
+                          FILE v: {fileVersion}
+                        </span>
+                     </div>
+                   )}
                 </label>
                 
-                {isUpdating && (
+                {(isUpdating || updateProgress > 0) && (
                   <div className="mt-6 bg-slate-50 p-4 rounded-xl border border-slate-100">
-                     <div className="flex justify-between text-[10px] font-black mb-1"><span>{updateStatus}</span><span>{updateProgress}%</span></div>
-                     <div className="h-2 bg-slate-200 rounded-full overflow-hidden"><div className="h-full bg-indigo-600 transition-all" style={{width:`${updateProgress}%`}}></div></div>
+                     <div className="flex justify-between text-[10px] font-black mb-1">
+                        <span className="text-slate-400 uppercase tracking-widest truncate max-w-[70%]">{updateStatus}</span>
+                        <span className="text-indigo-600 shrink-0">{updateProgress}%</span>
+                     </div>
+                     <div className="h-2 bg-slate-200 rounded-full overflow-hidden shadow-inner">
+                        <div className="h-full bg-indigo-600 transition-all duration-300" style={{width:`${updateProgress}%`}}></div>
+                     </div>
                   </div>
                 )}
 
-                <button onClick={runFirmwareUpdate} disabled={!isConnected || !selectedFile || isUpdating} className="w-full h-12 bg-slate-900 text-white rounded-xl font-black mt-6 shadow-lg disabled:opacity-20 active:scale-95 transition-all">START UPGRADE</button>
+                <div className="flex gap-2 mt-6">
+                  <button 
+                    onClick={() => runFirmwareUpdate(isUpdatePaused)} 
+                    disabled={!isConnected || !selectedFile || (isUpdating && !isUpdatePaused)} 
+                    className={`flex-1 h-12 rounded-xl font-black shadow-lg active:scale-95 transition-all text-xs tracking-widest ${(!isConnected || !selectedFile || (isUpdating && !isUpdatePaused)) ? 'bg-slate-100 text-slate-300' : 'bg-slate-900 text-white'}`}
+                  >
+                    {isUpdatePaused ? 'RESTART' : isUpdating ? 'UPGRADING...' : 'START UPGRADE'}
+                  </button>
+
+                  {isUpdating && (
+                    <button 
+                      onClick={() => setIsUpdatePaused(!isUpdatePaused)} 
+                      className={`w-14 h-12 rounded-xl font-black shadow-lg flex items-center justify-center transition-all ${isUpdatePaused ? 'bg-emerald-500 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
+                    >
+                      {isUpdatePaused ? <Play className="w-5 h-5 fill-current" /> : <Pause className="w-5 h-5 fill-current" />}
+                    </button>
+                  )}
+                </div>
              </div>
           </div>
         )}
 
-        {/* History Tab */}
         {activeTab === 'history' && (
           <div className="flex-1 p-4 overflow-y-auto space-y-2">
              <div className="flex justify-between items-center mb-4 px-2">
@@ -479,36 +614,43 @@ const App: React.FC = () => {
         )}
       </main>
 
-      {/* Nav */}
       <footer className="bg-white border-t border-slate-200 h-16 flex items-center justify-center shrink-0 z-50">
-          <div className="flex w-full max-w-sm gap-1 p-1 bg-slate-100 rounded-xl mx-4">
+          <div className="flex w-full max-w-sm gap-1 p-1 bg-slate-100 rounded-xl mx-4 shadow-inner">
             <button onClick={() => setActiveTab('terminal')} className={`flex-1 py-2 rounded-lg text-[10px] font-black flex items-center justify-center gap-2 ${activeTab === 'terminal' ? 'bg-white shadow-sm text-indigo-600' : 'text-slate-400'}`}><Terminal className="w-4 h-4" /> TERMINAL</button>
             <button onClick={() => setActiveTab('update')} className={`flex-1 py-2 rounded-lg text-[10px] font-black flex items-center justify-center gap-2 ${activeTab === 'update' ? 'bg-white shadow-sm text-indigo-600' : 'text-slate-400'}`}><Cpu className="w-4 h-4" /> UPDATE</button>
             <button onClick={() => setActiveTab('history')} className={`flex-1 py-2 rounded-lg text-[10px] font-black flex items-center justify-center gap-2 ${activeTab === 'history' ? 'bg-white shadow-sm text-indigo-600' : 'text-slate-400'}`}><Database className="w-4 h-4" /> HISTORY</button>
           </div>
       </footer>
 
-      {/* Adv Config */}
       <div className={`fixed inset-0 z-[100] transition-all duration-300 ${isAdvConfigOpen ? 'visible opacity-100' : 'invisible opacity-0'}`}>
          <div className="absolute inset-0 bg-slate-900/50 backdrop-blur-sm" onClick={() => setIsAdvConfigOpen(false)}></div>
          <div className="absolute bottom-0 inset-x-0 bg-white rounded-t-3xl p-6 shadow-2xl transition-transform translate-y-0">
-            <h3 className="font-black text-slate-800 mb-6 flex justify-between">ADVANCED SETTINGS <X className="cursor-pointer" onClick={() => setIsAdvConfigOpen(false)} /></h3>
+            <h3 className="font-black text-slate-800 mb-6 flex justify-between uppercase tracking-widest text-sm">Advanced Settings <X className="cursor-pointer" onClick={() => setIsAdvConfigOpen(false)} /></h3>
             <div className="space-y-4">
+               <div className="grid grid-cols-2 gap-4">
+                  <div className="bg-slate-50 p-4 rounded-xl border border-slate-100">
+                    <label className="text-[10px] font-black text-slate-400 block mb-1 uppercase tracking-widest">Baud Rate</label>
+                    <select value={config.baudRate} onChange={e => setConfig({...config, baudRate: parseInt(e.target.value)})} className="w-full bg-transparent font-black text-slate-800 outline-none">
+                        {[9600, 19200, 38400, 57600, 115200].map(b => <option key={b} value={b}>{b} bps</option>)}
+                    </select>
+                  </div>
+                  <div className="bg-slate-50 p-4 rounded-xl border border-slate-100">
+                    <label className="text-[10px] font-black text-slate-400 block mb-1 uppercase tracking-widest">設備 ID (0-15)</label>
+                    <input type="number" min="0" max="15" value={config.id} onChange={e => setConfig({...config, id: Math.max(0, Math.min(15, parseInt(e.target.value) || 0))})} className="w-full bg-transparent font-black text-slate-800 outline-none" />
+                  </div>
+               </div>
                <div className="bg-slate-50 p-4 rounded-xl border border-slate-100">
-                  <label className="text-[10px] font-black text-slate-400 block mb-1 uppercase">Baud Rate</label>
-                  <select value={config.baudRate} onChange={e => setConfig({...config, baudRate: parseInt(e.target.value)})} className="w-full bg-transparent font-black text-slate-800 outline-none">
-                     {[9600, 19200, 38400, 57600, 115200].map(b => <option key={b} value={b}>{b} bps</option>)}
-                  </select>
+                  <label className="text-[10px] font-black text-slate-400 block mb-1 uppercase tracking-widest">單次測試間隔 (MS)</label>
+                  <input type="number" value={config.intervalMs} onChange={e => setConfig({...config, intervalMs: parseInt(e.target.value) || 0})} className="w-full bg-transparent font-black text-slate-800 outline-none" />
                </div>
                <div className="flex items-center gap-3 px-2">
                   <input type="checkbox" checked={config.stopOnError} onChange={e => setConfig({...config, stopOnError: e.target.checked})} className="w-4 h-4 rounded accent-indigo-600" />
-                  <span className="text-xs font-bold text-slate-600">異常時自動停止測試</span>
+                  <span className="text-xs font-bold text-slate-600">異常時自動停止測試流程</span>
                </div>
             </div>
-            <button onClick={() => setIsAdvConfigOpen(false)} className="w-full h-12 bg-slate-900 text-white font-black rounded-xl mt-8">CLOSE</button>
+            <button onClick={() => setIsAdvConfigOpen(false)} className="w-full h-12 bg-slate-900 text-white font-black rounded-xl mt-8 shadow-lg uppercase tracking-widest text-xs">Close and Save</button>
          </div>
       </div>
-
       <style dangerouslySetInnerHTML={{ __html: `.custom-scrollbar::-webkit-scrollbar { width: 3px; } .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 10px; }`}} />
     </div>
   );
