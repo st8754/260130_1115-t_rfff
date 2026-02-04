@@ -53,6 +53,7 @@ export interface DecodedPacket {
   count?: number;
   errorCode: string;
   epc?: string;
+  userData?: string;
   fwVersion?: string;
   updateCount?: number;
   currentPacketNum?: number;
@@ -96,6 +97,30 @@ export const build61HRequest = (id: number, antenna: number): Uint8Array => {
 };
 
 /**
+ * Build 63H (Read User Memory Data With Auto Power)
+ */
+export const build63HRequest = (id: number, antenna: number, addrHex: string, lenWord: number): Uint8Array => {
+  const packet = new Uint8Array(10);
+  packet[0] = 0x80;
+  packet[1] = 0x00;
+  packet[2] = 0x07;
+  packet[3] = 0x63;
+  packet[4] = id & 0xFF;
+  packet[5] = antenna & 0xFF;
+  
+  // Data-Addr (2 Bytes)
+  const addr = parseInt(addrHex, 16) || 0;
+  packet[6] = (addr >> 8) & 0xFF;
+  packet[7] = addr & 0xFF;
+  
+  // Data-Len (1 Byte, Unit: Word)
+  packet[8] = lenWord & 0xFF;
+  
+  packet[9] = calculateXOR(packet.slice(0, 9));
+  return packet;
+};
+
+/**
  * Build 35H (Read FW Version)
  */
 export const build35HRequest = (id: number): Uint8Array => {
@@ -125,8 +150,6 @@ export const buildF0HRequest = (id: number): Uint8Array => {
 
 /**
  * Build F1H (Transmit Update Packet)
- * Request: SOF(80) LEN(0205) CMD(F1) ID(1) COUNT(2) PACKET(512) CRC(1)
- * Total Length: 1 + 2 + 1 + 1 + 2 + 512 + 1 = 520 bytes
  */
 export const buildF1HRequest = (id: number, count: number, data512: Uint8Array): Uint8Array => {
   const packet = new Uint8Array(520);
@@ -138,7 +161,6 @@ export const buildF1HRequest = (id: number, count: number, data512: Uint8Array):
   packet[5] = (count >> 8) & 0xFF;
   packet[6] = count & 0xFF;
   packet.set(data512, 7);
-  // CRC 應該在最後一個位置，即 index 519
   packet[519] = calculateXOR(packet.slice(0, 519));
   return packet;
 };
@@ -200,6 +222,16 @@ export const scanAllPackets = (buffer: Uint8Array, expectedCmd: CommandType | 'F
             if (packet.length >= 7) {
                 decoded.errorCode = uint8ArrayToHex(packet.slice(packet.length - 3, packet.length - 1)).replace(/\s/g, '');
                 if (packet.length > 10) decoded.epc = uint8ArrayToHex(packet.slice(9, packet.length - 3));
+            }
+          }
+          else if (cmd === 0x63) {
+            if (packet.length >= 9) {
+                // Error Code 位於封包末尾倒數第 3, 2 個 Byte (CRC 之前)
+                decoded.errorCode = uint8ArrayToHex(packet.slice(packet.length - 3, packet.length - 1)).replace(/\s/g, '');
+                // User Memory Data 從 index 9 開始到 Error Code 之前
+                if (packet.length > 12) {
+                    decoded.userData = uint8ArrayToHex(packet.slice(9, packet.length - 3));
+                }
             }
           }
           else if (cmd === 0x35) {

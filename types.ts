@@ -1,5 +1,5 @@
 
-export type CommandType = '64H' | '61H' | '35H';
+export type CommandType = '64H' | '61H' | '35H' | '63H';
 
 export interface TestConfig {
   commandType: CommandType;
@@ -12,6 +12,9 @@ export interface TestConfig {
   power: number;
   baudRate: number;
   stopOnError: boolean;
+  // 63H 專用參數
+  userAddr: string; // 十六進制字串，例如 "0000"
+  userLen: number;  // 讀取長度 (Word)
 }
 
 export interface TestResult {
@@ -24,6 +27,8 @@ export interface TestResult {
   rawRx: string;
   recordsFound: number;
   cmdType: CommandType;
+  userData?: string;   // 63H 讀回來的 User Memory Data
+  fwVersion?: string;  // 35H 讀回來的韌體版本
 }
 
 export const ERROR_CODES: Record<string, string> = {
@@ -39,7 +44,7 @@ export const ERROR_CODES: Record<string, string> = {
   '4001': '資料寫入內部 Flash 失敗',
   '4002': '資料讀取內部 Flash 失敗',
   '4003': '資料寫入外部 Flash 失敗',
-  '4004': '資料讀取外部 Flash 失敗',
+  '4004': '資料讀取內部 Flash 失敗',
   '4005': '外部 Flash 初始化錯誤',
   '8001': '更新資料 CheckSum 1 錯誤',
   '8002': '更新資料 CheckSum 2 錯誤',
