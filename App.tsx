@@ -38,6 +38,13 @@ const App: React.FC = () => {
   const [isAdvConfigOpen, setIsAdvConfigOpen] = useState(false);
   const [isCmdMenuOpen, setIsCmdMenuOpen] = useState(false);
   
+  // 指令名稱映射表
+  const commandLabels: Record<CommandType, string> = {
+    '64H': 'Read EPC Data Advance(64H)',
+    '61H': 'Read EPC Data Auto Power(61H)',
+    '35H': 'Read FW Version(35H)'
+  };
+
   // 從 localStorage 初始化設定，若無則使用預設值
   const [config, setConfig] = useState<TestConfig>(() => {
     const saved = localStorage.getItem('rfid_tester_config');
@@ -594,11 +601,11 @@ const App: React.FC = () => {
                 <div className="p-4 flex flex-col h-full overflow-visible">
                    <div className="flex items-center gap-3 mb-4 shrink-0 overflow-visible">
                       <div className="relative shrink-0">
-                         <button onClick={() => setIsCmdMenuOpen(!isCmdMenuOpen)} className="flex items-center gap-2 px-5 h-12 bg-slate-900 text-white rounded-xl font-black text-base tracking-widest shadow-md hover:bg-slate-800 transition-colors">{config.commandType} <ChevronDown className="w-4 h-4" /></button>
+                         <button onClick={() => setIsCmdMenuOpen(!isCmdMenuOpen)} className="flex items-center gap-2 px-5 h-12 bg-slate-900 text-white rounded-xl font-black text-sm tracking-tight shadow-md hover:bg-slate-800 transition-colors">{commandLabels[config.commandType]} <ChevronDown className="w-4 h-4 shrink-0" /></button>
                          {isCmdMenuOpen && (
-                           <div className="absolute bottom-full left-0 mb-3 w-32 bg-white border border-slate-200 rounded-xl shadow-2xl overflow-hidden z-[100] animate-in fade-in slide-in-from-bottom-2">
+                           <div className="absolute bottom-full left-0 mb-3 w-[280px] bg-white border border-slate-200 rounded-xl shadow-2xl overflow-hidden z-[100] animate-in fade-in slide-in-from-bottom-2">
                              {(['64H', '61H', '35H'] as CommandType[]).map(t => (
-                               <button key={t} onClick={() => { setConfig({...config, commandType: t}); setIsCmdMenuOpen(false); }} className="w-full py-4 text-base font-black hover:bg-slate-50 border-b border-slate-50 last:border-0">{t}</button>
+                               <button key={t} onClick={() => { setConfig({...config, commandType: t}); setIsCmdMenuOpen(false); }} className="w-full py-4 px-5 text-sm font-black text-left hover:bg-slate-50 border-b border-slate-50 last:border-0">{commandLabels[t]}</button>
                              ))}
                            </div>
                          )}
@@ -707,7 +714,7 @@ const App: React.FC = () => {
                   <div className="flex items-center gap-4">
                      <div className={`w-10 h-10 rounded-xl flex items-center justify-center font-black text-sm ${r.status === 'Success' ? 'bg-emerald-50 text-emerald-600' : 'bg-rose-50 text-rose-600'}`}>#{r.cycle}</div>
                      <div>
-                        <div className="text-base font-black text-slate-800">{r.cmdType} 指令模式</div>
+                        <div className="text-base font-black text-slate-800">{commandLabels[r.cmdType]}</div>
                         <div className="text-sm text-slate-400 font-bold">{r.recordsFound} 筆標籤偵測成功</div>
                      </div>
                   </div>
