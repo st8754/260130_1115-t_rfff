@@ -54,6 +54,13 @@ const App: React.FC = () => {
     '63H': 'Read User Memory Auto Power(63H)'
   };
 
+  const shortCommandLabels: Record<CommandType, string> = {
+    '64H': 'EPC (64H)',
+    '61H': 'Auto (61H)',
+    '35H': 'FW (35H)',
+    '63H': 'User (63H)'
+  };
+
   const [config, setConfig] = useState<TestConfig>(() => {
     const saved = localStorage.getItem('rfid_tester_config');
     if (saved) {
@@ -435,8 +442,14 @@ const App: React.FC = () => {
                 <button onClick={() => setIsControlExpanded(!isControlExpanded)} className="absolute -top-4 left-1/2 -translate-x-1/2 bg-white border border-slate-200 rounded-full p-1 shadow-md z-50 transition-colors"><ChevronUp className={`w-5 h-5 text-slate-400 transition-transform ${isControlExpanded ? 'rotate-180' : ''}`} /></button>
                 <div className="p-4 flex flex-col h-full">
                    <div className="flex items-center gap-3 mb-4 shrink-0 overflow-visible">
-                      <div className="relative shrink-0">
-                         <button onClick={(e) => { e.stopPropagation(); setIsCmdMenuOpen(!isCmdMenuOpen); }} className="flex items-center gap-2 px-4 h-11 bg-slate-900 text-white rounded-lg font-black text-xs shadow-md">{commandLabels[config.commandType]} <ChevronDown className="w-3 h-3 shrink-0" /></button>
+                      <div className="relative shrink-0 flex-1 sm:flex-initial">
+                         <button onClick={(e) => { e.stopPropagation(); setIsCmdMenuOpen(!isCmdMenuOpen); }} className="flex items-center justify-between gap-2 px-4 h-11 bg-slate-900 text-white rounded-lg font-black text-xs shadow-md w-full">
+                           <span className="truncate max-w-[120px] sm:max-w-none">
+                             <span className="sm:hidden">{shortCommandLabels[config.commandType]}</span>
+                             <span className="hidden sm:inline">{commandLabels[config.commandType]}</span>
+                           </span>
+                           <ChevronDown className="w-3 h-3 shrink-0" />
+                         </button>
                          {isCmdMenuOpen && (
                            <div className="absolute bottom-full left-0 mb-3 w-[280px] bg-white border border-slate-200 rounded-xl shadow-2xl z-[100] overflow-hidden">
                              {(['64H', '61H', '63H', '35H'] as CommandType[]).map(t => (
@@ -445,10 +458,19 @@ const App: React.FC = () => {
                            </div>
                          )}
                       </div>
-                      <div className="flex-1 flex justify-end gap-2">
-                         <button onClick={handleSingleTest} disabled={!isConnected || isTesting || isSingleTesting} className="h-11 px-4 rounded-lg font-black text-xs flex items-center gap-2 bg-slate-100 text-slate-700 hover:bg-slate-200 active:scale-95 transition-all disabled:opacity-50"><Play className="w-4 h-4" /> 單次</button>
-                         <button onClick={isTesting ? () => stopRequestedRef.current = true : startTesting} disabled={!isConnected || isSingleTesting} className={`h-11 px-6 rounded-lg font-black text-xs flex items-center gap-2 shadow-lg transition-all ${isTesting ? 'bg-rose-500 text-white animate-pulse' : 'bg-indigo-600 text-white hover:bg-indigo-700 active:scale-95 disabled:bg-slate-100'}`}>
-                           {isTesting ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />} {isTesting ? '停止測試' : '開始壓力測試'}
+                      <div className="flex shrink-0 justify-end gap-2">
+                         <button onClick={handleSingleTest} disabled={!isConnected || isTesting || isSingleTesting} className="h-11 px-3 sm:px-4 rounded-lg font-black text-xs flex items-center gap-2 bg-slate-100 text-slate-700 hover:bg-slate-200 active:scale-95 transition-all disabled:opacity-50">
+                           <Play className="w-4 h-4" /> <span>單次</span>
+                         </button>
+                         <button onClick={isTesting ? () => stopRequestedRef.current = true : startTesting} disabled={!isConnected || isSingleTesting} className={`h-11 px-4 sm:px-6 rounded-lg font-black text-xs flex items-center gap-2 shadow-lg transition-all ${isTesting ? 'bg-rose-500 text-white animate-pulse' : 'bg-indigo-600 text-white hover:bg-indigo-700 active:scale-95 disabled:bg-slate-100'}`}>
+                           {isTesting ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />} 
+                           <span>
+                             {isTesting ? (
+                               <><span className="hidden sm:inline">停止測試</span><span className="sm:hidden">停止</span></>
+                             ) : (
+                               <><span className="hidden sm:inline">開始壓力測試</span><span className="sm:hidden text-sm">壓測</span></>
+                             )}
+                           </span>
                          </button>
                       </div>
                    </div>
