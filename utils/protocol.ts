@@ -180,6 +180,47 @@ export const buildF2HRequest = (id: number): Uint8Array => {
 };
 
 /**
+ * Build 70H (Write Tag Data)
+ */
+export const build70HRequest = (id: number, antenna: number, power: number, addrHex: string, lenWord: number, dataHex: string): Uint8Array => {
+  const dataBytes = dataHex.replace(/\s/g, '').match(/.{1,2}/g)?.map(byte => parseInt(byte, 16)) || [];
+  const n = dataBytes.length;
+  const packetLen = 22 + n; // CMD(1) + Data(20+N) + CRC(1)
+  const packet = new Uint8Array(3 + packetLen);
+  
+  packet[0] = 0x80;
+  packet[1] = (packetLen >> 8) & 0xFF;
+  packet[2] = packetLen & 0xFF;
+  packet[3] = 0x70;
+  packet[4] = id & 0xFF;
+  packet[5] = antenna & 0xFF;
+  packet[6] = 0x01; // Write Data Type: EPC Data
+  packet[7] = power & 0xFF;
+  packet[8] = 0xFF; // Set Target Tag EPC Data Length (First found)
+  
+  // Target Tag EPC Data (12 Bytes 0x00)
+  for (let i = 0; i < 12; i++) {
+    packet[9 + i] = 0x00;
+  }
+  
+  // Addr (2 Bytes)
+  const addr = parseInt(addrHex, 16) || 0;
+  packet[21] = (addr >> 8) & 0xFF;
+  packet[22] = addr & 0xFF;
+  
+  // Len (1 Byte)
+  packet[23] = lenWord & 0xFF;
+  
+  // Write Data (N Bytes)
+  for (let i = 0; i < n; i++) {
+    packet[24 + i] = dataBytes[i];
+  }
+  
+  packet[packet.length - 1] = calculateXOR(packet.slice(0, packet.length - 1));
+  return packet;
+};
+
+/**
  * 通用響應解析器
  */
 export const scanAllPackets = (buffer: Uint8Array, expectedCmd: CommandType | 'F0' | 'F1' | 'F2'): DecodedPacket[] => {
@@ -232,6 +273,11 @@ export const scanAllPackets = (buffer: Uint8Array, expectedCmd: CommandType | 'F
                 if (packet.length > 12) {
                     decoded.userData = uint8ArrayToHex(packet.slice(9, packet.length - 3));
                 }
+            }
+          }
+          else if (cmd === 0x70) {
+            if (packet.length >= 9) {
+              decoded.errorCode = uint8ArrayToHex(packet.slice(6, 8)).replace(/\s/g, '');
             }
           }
           else if (cmd === 0x35) {

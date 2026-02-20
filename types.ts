@@ -1,5 +1,5 @@
 
-export type CommandType = '64H' | '61H' | '35H' | '63H';
+export type CommandType = '64H' | '61H' | '35H' | '63H' | '70H';
 
 export interface TestConfig {
   commandType: CommandType;
@@ -15,6 +15,10 @@ export interface TestConfig {
   // 63H 專用參數
   userAddr: string; // 十六進制字串，例如 "0000"
   userLen: number;  // 讀取長度 (Word)
+  // 70H 專用參數
+  writeAddr: string; // 十六進制字串，例如 "0002"
+  writeLen: number;  // 寫入長度 (Word)
+  writeData: string; // 十六進制字串
 }
 
 export interface TestResult {

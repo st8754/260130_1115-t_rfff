@@ -5,7 +5,7 @@ import {
 } from 'lucide-react';
 import { TestConfig, TestResult, ERROR_CODES, CommandType } from './types';
 import { 
-  build64HRequest, build61HRequest, build35HRequest, build63HRequest, uint8ArrayToHex, scanAllPackets,
+  build64HRequest, build61HRequest, build35HRequest, build63HRequest, build70HRequest, uint8ArrayToHex, scanAllPackets, hexToAscii,
   buildF0HRequest, buildF1HRequest, buildF2HRequest
 } from './utils/protocol';
 import { initDB, saveResultToDB, getAllResultsFromDB, clearDB } from './utils/db';
@@ -51,14 +51,16 @@ const App: React.FC = () => {
     '64H': 'Read EPC Data Advance(64H)',
     '61H': 'Read EPC Data Auto Power(61H)',
     '35H': 'Read FW Version(35H)',
-    '63H': 'Read User Memory Auto Power(63H)'
+    '63H': 'Read User Memory Auto Power(63H)',
+    '70H': 'Write Tag Data(70H)'
   };
 
   const shortCommandLabels: Record<CommandType, string> = {
     '64H': 'EPC (64H)',
     '61H': 'Auto (61H)',
     '35H': 'FW (35H)',
-    '63H': 'User (63H)'
+    '63H': 'User (63H)',
+    '70H': 'Write (70H)'
   };
 
   const [config, setConfig] = useState<TestConfig>(() => {
@@ -69,7 +71,8 @@ const App: React.FC = () => {
     return {
       commandType: '64H', totalCycles: 10, timeoutMs: 3000, intervalMs: 100, maxRecords: 10,
       id: 1, channel: 0, power: 33, baudRate: 38400, stopOnError: false,
-      userAddr: '0000', userLen: 4
+      userAddr: '0000', userLen: 4,
+      writeAddr: '0002', writeLen: 6, writeData: 'FFFF00000000000000000000'
     };
   });
   
@@ -269,6 +272,7 @@ const App: React.FC = () => {
         case '61H': txBuffer = build61HRequest(config.id, config.channel); break;
         case '63H': txBuffer = build63HRequest(config.id, config.channel, config.userAddr, config.userLen); break;
         case '35H': txBuffer = build35HRequest(config.id); break;
+        case '70H': txBuffer = build70HRequest(config.id, config.channel, config.power, config.writeAddr, config.writeLen, config.writeData); break;
         default: txBuffer = build64HRequest(config.id, config.channel, config.power, config.timeoutMs, config.maxRecords);
     }
     
@@ -281,16 +285,39 @@ const App: React.FC = () => {
       packets.forEach(p => {
         if (!processedRaw.has(p.raw)) {
           processedRaw.add(p.raw);
-          if (p.cmd === 0x35) { addLog(`[RX] 版本: ${p.fwVersion}`, 'rx'); isFinished = true; finalErrorCode = p.errorCode; fwVersion = p.fwVersion || ''; }
+          addLog(`[RX] Raw: ${p.raw}`, 'rx');
+          if (p.cmd === 0x35) {
+            addLog(`[RX] 版本: ${p.fwVersion}`, 'rx');
+            isFinished = true; finalErrorCode = p.errorCode; fwVersion = p.fwVersion || '';
+          }
+          else if (p.cmd === 0x70) {
+            addLog(`[RX] 寫入結果: ${p.errorCode === '0001' || p.errorCode === '0000' ? '成功' : '失敗'}`, p.errorCode === '0001' || p.errorCode === '0000' ? 'info' : 'error');
+            isFinished = true; finalErrorCode = p.errorCode;
+          }
           else if (p.cmd === 0x61) {
-            if (p.epc) { addLog(`[RX] 標籤: ${p.epc}`, 'tag'); if (!epcList.includes(p.epc)) epcList.push(p.epc); }
+            if (p.epc) {
+              addLog(`[RX] 標籤: ${p.epc}`, 'tag');
+              if (p.epc.replace(/\s/g, '').length > 0) addLog(`[RX] EPC (ASCII): ${hexToAscii(p.epc)}`, 'info');
+              if (!epcList.includes(p.epc)) epcList.push(p.epc);
+            }
             if (p.errorCode !== 'N/A') { isFinished = true; finalErrorCode = p.errorCode; }
           } else if (p.cmd === 0x63) {
-            if (p.userData) { addLog(`[RX] User Data: ${p.userData}`, 'info'); userData = p.userData; }
+            if (p.userData) {
+              addLog(`[RX] User Data: ${p.userData}`, 'info');
+              if (p.userData.replace(/\s/g, '').length > 0) addLog(`[RX] User Data (ASCII): ${hexToAscii(p.userData)}`, 'info');
+              userData = p.userData;
+            }
             if (p.errorCode !== 'N/A') { isFinished = true; finalErrorCode = p.errorCode; }
           } else if (p.cmd === 0x64) {
-            if (p.status === 0x01) { addLog(`[RX] 結束: 找到 ${p.count} 筆`, 'rx'); isFinished = true; finalErrorCode = p.errorCode; }
-            else if (p.status === 0x00 && p.epc) { addLog(`[RX] 標籤: ${p.epc}`, 'tag'); if (!epcList.includes(p.epc)) epcList.push(p.epc); }
+            if (p.status === 0x01) {
+              addLog(`[RX] 結束: 找到 ${p.count} 筆`, 'rx');
+              isFinished = true; finalErrorCode = p.errorCode;
+            }
+            else if (p.status === 0x00 && p.epc) {
+              addLog(`[RX] 標籤: ${p.epc}`, 'tag');
+              if (p.epc.replace(/\s/g, '').length > 0) addLog(`[RX] EPC (ASCII): ${hexToAscii(p.epc)}`, 'info');
+              if (!epcList.includes(p.epc)) epcList.push(p.epc);
+            }
           }
         }
       });
@@ -452,7 +479,7 @@ const App: React.FC = () => {
                          </button>
                          {isCmdMenuOpen && (
                            <div className="absolute bottom-full left-0 mb-3 w-[280px] bg-white border border-slate-200 rounded-xl shadow-2xl z-[100] overflow-hidden">
-                             {(['64H', '61H', '63H', '35H'] as CommandType[]).map(t => (
+                             {(['64H', '61H', '63H', '70H', '35H'] as CommandType[]).map(t => (
                                <button key={t} onClick={() => { setConfig({...config, commandType: t}); setIsCmdMenuOpen(false); }} className="w-full py-4 px-5 text-xs font-black text-left hover:bg-slate-50 border-b border-slate-50 last:border-0">{commandLabels[t]}</button>
                              ))}
                            </div>
@@ -508,6 +535,45 @@ const App: React.FC = () => {
                                 onChange={e => setConfig({...config, userLen: Math.max(1, parseInt(e.target.value) || 1)})} 
                                 className="w-full bg-transparent font-black text-indigo-600 outline-none text-sm" 
                               />
+                           </div>
+                        </>
+                      )}
+
+                      {/* 動態顯示 70H 指令專屬欄位 */}
+                      {config.commandType === '70H' && (
+                        <>
+                           <div className="bg-emerald-50/50 p-3 rounded-lg border border-emerald-100 flex flex-col animate-in fade-in slide-in-from-top-2 duration-300">
+                              <label className="text-[10px] font-black text-emerald-400 uppercase mb-1">寫入位址 (Hex)</label>
+                              <input 
+                                type="text" 
+                                value={config.writeAddr} 
+                                onChange={e => setConfig({...config, writeAddr: e.target.value.toUpperCase().replace(/[^0-9A-F]/g, '').substring(0,4)})} 
+                                className="w-full bg-transparent font-black text-emerald-600 outline-none text-sm" 
+                                placeholder="0002"
+                              />
+                           </div>
+                           <div className="bg-emerald-50/50 p-3 rounded-lg border border-emerald-100 flex flex-col animate-in fade-in slide-in-from-top-2 duration-400">
+                              <label className="text-[10px] font-black text-emerald-400 uppercase mb-1">寫入長度 (Word)</label>
+                              <input 
+                                type="number" 
+                                value={config.writeLen} 
+                                onChange={e => setConfig({...config, writeLen: Math.max(1, Math.min(6, parseInt(e.target.value) || 1))})} 
+                                className="w-full bg-transparent font-black text-emerald-600 outline-none text-sm" 
+                              />
+                           </div>
+                           <div className="col-span-2 bg-emerald-50/50 p-3 rounded-lg border border-emerald-100 flex flex-col animate-in fade-in slide-in-from-top-2 duration-500">
+                              <label className="text-[10px] font-black text-emerald-400 uppercase mb-1">寫入資料 (Hex)</label>
+                              <input 
+                                type="text" 
+                                value={config.writeData} 
+                                onChange={e => {
+                                  const val = e.target.value.toUpperCase().replace(/[^0-9A-F]/g, '');
+                                  setConfig({...config, writeData: val});
+                                }} 
+                                className="w-full bg-transparent font-black text-emerald-600 outline-none text-sm" 
+                                placeholder="FFFF..."
+                              />
+                              <div className="text-[9px] text-emerald-400 mt-1 font-bold">目前長度: {config.writeData.length / 2} Byte (需為 {config.writeLen * 2} Byte)</div>
                            </div>
                         </>
                       )}
